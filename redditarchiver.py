@@ -25,23 +25,24 @@ import urlparse
 import re
 import subprocess32
 import requests
+import time
+import shutil
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--fresh-start',action='store_true', help='Ignore any previous data and get everything again.')
     parser.add_argument('--reprocess',action='store_true', help='Run the whole JSON file through the processing function again. This is handy when additional processing functionality has been added.')
     parser.add_argument('--no-save',dest='save', action='store_false', help="Don't save the resulting data or latest ID.")
-    parser.add_argument('--no-process',dest='process', action='store_false', help="Don't process the results.")
+    parser.add_argument('--process',dest='process', action='store_true', help="Process the results, downloading imgur links with wget and tagging them with the tag utility.")
     parser.add_argument('-d', '--directory', help="Where to put the archived files", default='~/Archive')
     parser.add_argument('-u', '--username', help="Which username to use. Overrides users.json")
     args = parser.parse_args()
 
-    user_agent = ("redditarchiver 0.02 by iamthad", "https://github.com/iamthad/redditarchiver")
+    user_agent = "redditarchiver 0.02 by iamthad https://github.com/iamthad/redditarchiver"
     r = praw.Reddit(user_agent = user_agent)
     r.config.store_json_result = True
 
     fresh_start = args.fresh_start
-    print(fresh_start)
     process = args.process
     reprocess = args.reprocess
     save = args.save
@@ -54,15 +55,22 @@ def main():
     if not os.path.isdir(raDir):
         os.mkdir(raDir)
     if args.username:
-        users = [{'username':args.username, 'toArchive': ['liked']}]
+        users = [{'username':args.username, 'toArchive': ['liked','saved']}]
     else:
         usersFn = os.path.join(raDir,'users.json')
         if os.path.exists(usersFn):
             with open(usersFn) as usersFile:
                 users = json.load(usersFile)
         else:
-            print('Create a JSON file at', usersFn, 'with user information. See users.json.template for an example')
+            print('Create a JSON file at', usersFn, 'with user information, or run with the --username argument. See users.json.template for an example')
 
+    if process or reprocess:
+        urlsFn = os.path.join(archiveDir,'urls.txt')
+        tagsFn = os.path.join(archiveDir,'tags.txt')
+        if os.path.exists(urlsFn):
+            os.remove(urlsFn)
+        if os.path.exists(tagsFn):
+            os.remove(tagsFn)
     for user in users:
         print(user['username'])
         r.login(username=user['username'],password=(user['password'] if 'password' in user else None))
@@ -76,14 +84,16 @@ def main():
             newestID = get_newest_id(ttype, userDir) if not fresh_start else []
             things = get_things(ttype, me, userDir, newestID)
             if process and not reprocess:
-                make_temp_files(things,archiveDir)
+                make_temp_files(things, archiveDir, urlsFn, tagsFn)
             things = (load_old_things(ttype, things, userDir) if not fresh_start else things)
             if reprocess:
-                make_temp_files(things,archiveDir)
+                make_temp_files(things, archiveDir, urlsFn, tagsFn)
             if save:
                 save_things(ttype, things, userDir)
     if process or reprocess:
-        run_commands(archiveDir,raDir)
+        if os.path.exists(urlsFn) and os.path.exists(tagsFn):
+            shutil.copy2('mktags.sh',archiveDir)
+            run_commands(archiveDir,raDir)
 
 def get_newest_id(ttype, userDir):
     newestIdFn = os.path.join(userDir,ttype+'-newest.txt')
@@ -144,7 +154,7 @@ def save_things(ttype, things, userDir):
         with open(thingJSONFn,'w') as thingsfile:
             json.dump(things,thingsfile)
 
-def make_temp_files(things,archiveDir):
+def make_temp_files(things,archiveDir,urlsFn,tagsFn):
     # from RES
     imgurHashReStr = r"^https?:\/\/(?:i\.|m\.|edge\.|www\.)*imgur\.com\/(?!gallery)(?!removalrequest)(?!random)(?!memegen)([\w]{5,7}(?:[&,][\w]{5,7})*)(?:#\d+)?[sbtmlh]?(\.(?:jpe?g|gif|png|gifv))?(\?.*)?$"
     imgurHashRe = re.compile(imgurHashReStr)
@@ -153,7 +163,7 @@ def make_temp_files(things,archiveDir):
     print('Processing', nThings, 'things.')
     contentTypeDict = {"image/jpeg": ".jpg", "image/gif": ".mp4", "image/png": ".png"}
 
-    with open(os.path.join(archiveDir,'urls.txt'),'a') as urlsFile, open(os.path.join(archiveDir,'tags.txt'),'a') as tagsFile:
+    with open(urlsFn,'a') as urlsFile, open(tagsFn,'a') as tagsFile:
         for thing in things:
             if 'url' in thing:
             # Can only process non-album imgur links for now
@@ -174,12 +184,13 @@ def make_temp_files(things,archiveDir):
                                 nImgurThings = nImgurThings + 1
                             else:
                                 print("Error, content-type not found", contentType, file=sys.stderr) 
+                        time.sleep(1)
     print('Used imgur logic for', nImgurThings, 'things.')
     
 
 def run_commands(archiveDir,raDir):
     subprocess32.check_call('wget -xN -w 2 -i urls.txt', cwd=archiveDir, shell=True)
-    subprocess32.check_call(os.path.join(raDir,'mktags.sh'),'tags.txt', cwd=archiveDir, shell=True)
+    subprocess32.check_call(os.path.join(archiveDir,'mktags.sh')+' tags.txt', cwd=archiveDir, shell=True)
 
 
 
